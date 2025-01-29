@@ -28,7 +28,7 @@ The Advanced Language Detection App is a web-based tool that accurately identifi
 
 Clone the repository:
 
-bashCopygit clone https://github.com/yourusername/language-detection-app.git
+bashCopygit clone https://github.com/techyogeshchauhan/language/blob/main/README.m
 cd language-detection-app
 
 Create a virtual environment (optional but recommended):
