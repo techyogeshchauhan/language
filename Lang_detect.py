@@ -3,46 +3,117 @@ import time
 from lingua import Language, LanguageDetectorBuilder
 import pandas as pd
 from datetime import datetime
+import mysql.connector
+from mysql.connector import Error
 
-# Page configuration
-st.set_page_config(
-    page_title="Advanced Language Detector",
-    page_icon="🌎",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# MySQL setup
+def get_database_connection():
+    """Connect to MySQL and return connection"""
+    try:
+        connection = mysql.connector.connect(
+            host="localhost",
+            user="root",  # Replace with your MySQL username
+            password="",  # Replace with your MySQL password
+            database="lange"
+        )
+        return connection
+    except Error as e:
+        st.error(f"Error connecting to MySQL: {e}")
+        return None
 
-# Custom CSS
-st.markdown("""
-    <style>
-    .stTextInput > div > div > input {
-        font-size: 18px;
-    }
-    .main-header {
-        font-size: 32px;
-        font-weight: bold;
-        margin-bottom: 20px;
-    }
-    .result-box {
-        padding: 20px;
-        border-radius: 10px;
-        background-color: #f0f8ff;
-        margin: 10px 0;
-    }
-    .language-confidence {
-        font-size: 24px;
-        font-weight: bold;
-        color: #1e90ff;
-    }
-    </style>
-    """, unsafe_allow_html=True)
+# MySQL operations
+def save_to_mysql(text, detected_lang, confidence, confidences):
+    """Save detection results to MySQL"""
+    connection = get_database_connection()
+    if connection:
+        try:
+            cursor = connection.cursor()
 
-# Initialize session state
-if 'history' not in st.session_state:
-    st.session_state.history = []
-if 'example_text' not in st.session_state:
-    st.session_state.example_text = ""
+            # Insert into detection_history table
+            query = """
+                INSERT INTO detection_history (timestamp, text, full_text, detected_language, confidence)
+                VALUES (%s, %s, %s, %s, %s)
+            """
+            values = (
+                datetime.now(),
+                text[:50] + '...' if len(text) > 50 else text,
+                text,
+                detected_lang.name if detected_lang else "Unknown",
+                float(confidence) if confidence else 0
+            )
+            cursor.execute(query, values)
+            history_id = cursor.lastrowid  # Get the ID of the inserted record
 
+            # Insert confidence scores into confidence_scores table
+            for lang, conf in confidences:
+                query = """
+                    INSERT INTO confidence_scores (history_id, language, confidence)
+                    VALUES (%s, %s, %s)
+                """
+                values = (history_id, lang.name, float(conf))
+                cursor.execute(query, values)
+
+            connection.commit()
+            cursor.close()
+        except Error as e:
+            st.error(f"Error saving to MySQL: {e}")
+        finally:
+            connection.close()
+
+def load_history():
+    """Load detection history from MySQL"""
+    connection = get_database_connection()
+    if connection:
+        try:
+            cursor = connection.cursor(dictionary=True)
+
+            # Get last 100 records, sorted by timestamp
+            query = """
+                SELECT timestamp, text, detected_language, confidence
+                FROM detection_history
+                ORDER BY timestamp DESC
+                LIMIT 100
+            """
+            cursor.execute(query)
+            history_data = cursor.fetchall()
+
+            # Format data for display
+            formatted_data = []
+            for record in history_data:
+                formatted_data.append({
+                    "timestamp": record["timestamp"].strftime("%Y-%m-%d %H:%M:%S"),
+                    "text": record["text"],
+                    "detected_language": record["detected_language"],
+                    "confidence": f"{record['confidence']:.2%}"
+                })
+
+            cursor.close()
+            return pd.DataFrame(formatted_data)
+        except Error as e:
+            st.error(f"Error loading history from MySQL: {e}")
+            return pd.DataFrame()
+        finally:
+            connection.close()
+    return pd.DataFrame()
+
+def clear_history():
+    """Clear all history from MySQL"""
+    connection = get_database_connection()
+    if connection:
+        try:
+            cursor = connection.cursor()
+
+            # Delete all records from confidence_scores and detection_history
+            cursor.execute("DELETE FROM confidence_scores")
+            cursor.execute("DELETE FROM detection_history")
+            connection.commit()
+            cursor.close()
+        except Error as e:
+            st.error(f"Error clearing history from MySQL: {e}")
+        finally:
+            connection.close()
+
+# Rest of the application code
 def get_all_languages():
     """Get dictionary of supported languages"""
     return {
@@ -103,30 +174,52 @@ def detect_language_with_confidence(text, detector):
         st.error(f"Error in language detection: {str(e)}")
         return None, []
 
-def save_to_history(text, detected_lang, confidence):
-    """Save detection results to history"""
-    st.session_state.history.append({
-        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        'text': text[:50] + '...' if len(text) > 50 else text,
-        'detected_language': detected_lang.name if detected_lang else 'Unknown',
-        'confidence': f"{confidence:.2%}" if confidence else 'N/A'
-    })
-
-def show_history():
-    """Display detection history"""
-    if st.session_state.history:
-        df = pd.DataFrame(st.session_state.history)
-        st.dataframe(df, hide_index=True)
-    else:
-        st.info("No detection history yet")
-
 def main():
+    # Page configuration
+    st.set_page_config(
+        page_title="Advanced Language Detector",
+        page_icon="🌎",
+        layout="wide",
+        initial_sidebar_state="expanded"
+    )
+
+    # Custom CSS
+    st.markdown("""
+        <style>
+        .stTextInput > div > div > input {
+            font-size: 18px;
+        }
+        .main-header {
+            font-size: 32px;
+            font-weight: bold;
+            margin-bottom: 20px;
+        }
+        .result-box {
+            padding: 20px;
+            border-radius: 10px;
+            background-color: #f0f8ff;
+            margin: 10px 0;
+        }
+        .language-confidence {
+            font-size: 24px;
+            font-weight: bold;
+            color: #1e90ff;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+
     # Sidebar
     with st.sidebar:
         st.header("📊 Detection History")
         if st.button("Clear History"):
-            st.session_state.history = []
-        show_history()
+            clear_history()
+        
+        # Load and display history
+        history_df = load_history()
+        if not history_df.empty:
+            st.dataframe(history_df, hide_index=True)
+        else:
+            st.info("No detection history yet")
 
     # Main content
     st.markdown("<h1 class='main-header'>🌎 Advanced Language Detection</h1>", unsafe_allow_html=True)
@@ -150,7 +243,7 @@ def main():
     with col1:
         text_input = st.text_area(
             "Enter text to detect language:",
-            value=st.session_state.example_text,
+            value=st.session_state.get("example_text", ""),
             height=150,
             help="Enter or paste the text you want to analyze"
         )
@@ -172,9 +265,9 @@ def main():
             detected_lang, confidences = detect_language_with_confidence(text_input, detector)
 
             if detected_lang and confidences:
-                # Save to history
+                # Save to MySQL
                 main_confidence = next((conf for lang, conf in confidences if lang == detected_lang), 0)
-                save_to_history(text_input, detected_lang, main_confidence)
+                save_to_mysql(text_input, detected_lang, main_confidence, confidences)
 
                 # Display results
                 st.markdown("### 📊 Detection Results")
@@ -210,6 +303,7 @@ def main():
                         <div style="
                             background-color: {'#e6f3ff' if lang == detected_lang else '#ffffff'};
                             padding: 15px;
+                            color:black;
                             border-radius: 5px;
                             margin: 5px 0;
                             border: 1px solid {'#1e90ff' if lang == detected_lang else '#ddd'};
